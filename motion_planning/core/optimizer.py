@@ -6,8 +6,8 @@ class NavigationOptimizationMultiprocessing(NavigationOptimization):
         result = super().optimize(scalars, ipopt_options=ipopt_options, queue=queue)
         if return_status is not None:  # get out status from multiprocessing
             return_status.value = result[0]
-            print("return_status", return_status)
+            #print("return_status", return_status)
         if return_traj is not None:
             return_traj[:] = result[1].x().tolist()
-            print("return traj", return_traj)
+            #print("return traj", return_traj)
         return result

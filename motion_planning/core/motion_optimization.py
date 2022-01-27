@@ -11,6 +11,9 @@ from pybewego.workspace_viewer_server import WorkspaceViewerServerPlanar
 from pyrieef.motion.trajectory import linear_interpolation_trajectory
 from pyrieef.geometry.rotations import rotation_matrix_2d_radian
 from multiprocessing.sharedctypes import Value, Array
+#For Global Planner
+from pyrieef.motion.cost_terms import *
+from pyrieef.graph.shortest_path import *
 import time
 from multiprocessing import Process
 from ctypes import c_bool, c_double
@@ -29,7 +32,7 @@ def get_grasp_pose(target, gripper_local_position, grasp_angle):
 class MotionOptimizer:
     def __init__(self, workspace: WorkspaceFromEnv, skeleton: List[Action], 
                 initial_traj_gen = linear_interpolation_trajectory, optimizer:MotionOptimization = NavigationOptimizationMultiprocessing, 
-                enable_viewer=False, flexible_traj_ratio=None):
+                enable_viewer=False, flexible_traj_ratio=None, enable_global_planner=False):
         self.workspace = workspace
         self.skeleton = skeleton.copy()
         self.current_action = skeleton[0]
@@ -48,6 +51,9 @@ class MotionOptimizer:
         self.final_trajectory = Trajectory(q_init=self.current_robot_position, x=np.array([self.current_robot_position]))
         if self.enable_viewer:
             self.viewer = WorkspaceViewerServerPlanar(workspace, self.final_trajectory, scale = 50)
+        
+        self.enable_global_planner = enable_global_planner
+        if self.enable_global_planner:
             pass
     def set_optimizer_options(self, **kwargs):
         self.optimizer_options["tol"] = 1e-2
@@ -66,7 +72,7 @@ class MotionOptimizer:
         self.optimizer_parameters.s_obstacle_gamma = 40
         self.optimizer_parameters.s_obstacle_margin = 0.5
         self.optimizer_parameters.s_obstacle_constraint = 1
-        self.optimizer_parameters.s_terminal_potential = 1e+2
+        self.optimizer_parameters.s_terminal_potential = 1e+3
         self.optimizer_parameters.s_waypoint_constraint = 0
 
     def update_final_trajectory(self, new_trajectory: Trajectory):
@@ -88,10 +94,10 @@ class MotionOptimizer:
                 self.workspace.update_ws_obstacles(object_to_grasp)
                 q_goal = get_grasp_pose(target_position, self.workspace.workspace_objects.robot._gripper_pose, calculate_angle(target_position-q_init))
                 if self.flexible_traj_ratio is not None:
-                    self.current_action.duration=int(np.max([int(calculate_distance(q_init, q_goal)*self.flexible_traj_ratio), 3]))
+                    self.current_action.duration=int(np.max([int(calculate_distance(q_init, q_goal)*self.flexible_traj_ratio), 5]))
                     print("New traj length", self.current_action.duration)
-                init_traj = self.initial_traj_gen(q_init=q_init,q_goal=q_goal, T=self.current_action.duration)
-                result, found_traj = self.find_trajectory(self.workspace, init_traj, self.current_action.duration)
+                #init_traj = self.initial_traj_gen(q_init=q_init,q_goal=q_goal, T=self.current_action.duration)
+                result, found_traj = self.find_trajectory(self.workspace, q_init,q_goal, self.current_action.duration)
                 if result:
                     self.current_action.set_trajectoy(found_traj)
                     self.current_robot_position = found_traj.final_configuration()
@@ -106,10 +112,10 @@ class MotionOptimizer:
                 self.workspace.update_ws_obstacles(holding_object)
                 q_goal = get_grasp_pose(target_position, self.workspace.workspace_objects.robot._gripper_pose, calculate_angle(target_position-q_init))
                 if self.flexible_traj_ratio is not None:
-                    self.current_action.duration=int(np.max([int(calculate_distance(q_init, q_goal)*self.flexible_traj_ratio), 3]))
+                    self.current_action.duration=int(np.max([int(calculate_distance(q_init, q_goal)*self.flexible_traj_ratio), 5]))
                     print("New traj length", self.current_action.duration)
-                init_traj = self.initial_traj_gen(q_init=q_init,q_goal=q_goal, T=self.current_action.duration)
-                result, found_traj = self.find_trajectory(self.workspace, init_traj, self.current_action.duration)
+                #init_traj = self.initial_traj_gen(q_init=q_init,q_goal=q_goal, T=self.current_action.duration)
+                result, found_traj = self.find_trajectory(self.workspace, q_init, q_goal, self.current_action.duration)
                 if result:
                     #Update the position of the grasped objet and robot
                     self.current_action.set_trajectoy(found_traj)
@@ -138,12 +144,17 @@ class MotionOptimizer:
             self.viewer.initialize_viewer(problem, problem.trajectory)
         else:
             print("Viewer is not Enabled")
-    def find_trajectory(self, workspace, trajectory, traj_length):
+    def find_trajectory(self, workspace, q_init, q_goal, traj_length):
+        trajectory = None
+        if self.enable_global_planner:
+            trajectory = self.trajectory_from_global_planner(workspace, q_init, q_goal, traj_length=traj_length)
+        if trajectory is None:
+            trajectory = self.initial_traj_gen(q_init=q_init,q_goal=q_goal, T=traj_length)
         problem = self.optimizer(
             workspace,
             trajectory,
             # trajectory,
-            dt=5 / float(traj_length),
+            dt=5 / float(trajectory.T()),
             q_goal=trajectory.final_configuration(),# + .05 * np.random.rand(2),
             bounds=workspace.box.extent_data())
         problem.verbose = False
@@ -183,3 +194,34 @@ class MotionOptimizer:
     
     def get_total_cost(self):
         return self.total_cost
+
+    def trajectory_from_global_planner(self, workspace: Workspace, q_init, q_goal, grid_points=60, average_cost=False, traj_length=None):
+        phi = CostGridPotential2D(SignedDistanceWorkspaceMap(workspace), 1., 100., 100.)
+        costmap = phi(workspace.box.stacked_meshgrid(grid_points))
+        converter = CostmapToSparseGraph(costmap, average_cost)
+        converter.integral_cost = True
+        graph = converter.convert()
+        if average_cost:
+            assert check_symmetric(graph)
+        pixel_map = workspace.pixel_map(grid_points)
+        q_init_grid = pixel_map.world_to_grid(q_init)
+
+        q_goal_grid = pixel_map.world_to_grid(q_goal)
+
+        try:
+            time_0 = time.time()
+            print("planning (1)...")
+            global_path = converter.dijkstra_on_map(costmap, q_goal_grid[0], q_goal_grid[1], q_init_grid[0], q_init_grid[1])
+        except:
+            print("Failed to generate the global planner")
+            return None
+        print("Global planner took t : {} sec.".format(time.time() - time_0))    
+        traj_configurations = []
+        for i, p in enumerate(global_path):
+            print(p)
+            traj_configurations.append(pixel_map.grid_to_world(np.array(p)))    
+        traj_configurations.append(q_goal)
+        traj_configurations = np.array(traj_configurations).reshape((-1,))    
+        trajectory = Trajectory(q_init=q_init, x=traj_configurations)
+        trajectory = resample(trajectory, traj_length)
+        return trajectory

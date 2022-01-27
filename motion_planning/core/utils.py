@@ -24,3 +24,5 @@ print(B.x())
 x = np.concatenate([A.x(), B.x()])
 C = Trajectory(q_init=x[0:2], x=x[2:])
 print(C)
+
+print(int(10/3))

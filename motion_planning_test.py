@@ -35,13 +35,15 @@ action_list = []
 for i in range(5):
     pick = MoveToPick(parameters=["object_{}".format(i)],duration=10)
     action_list.append(pick)
-    place = MoveToPlace(parameters=["object_{}".format(i), "target_{}".format(i)], duration=20)
+    place = MoveToPlace(parameters=["object_{}".format(i), "target_{}".format(i)], duration=10)
     action_list.append(place)
 
 #action_list = [MoveToPick(parameters=["object_0"],duration=50), MoveToPlace(parameters=["object_0", "target_0"], duration=20)]
 objective_TrajConstraint=TrajectoryConstraintObjective(T=TRAJ_LENGTH)
-env = ToyPickPlaceFiveObject(render=VIEWER_ENABLE, map_name="maze_world_with_obs", is_object_random=True, is_target_random=True)
-# workspace_objects = env.get_workspace_objects()
+#env = ToyPickPlaceFiveObject(render=VIEWER_ENABLE, map_name="maze_world_narrow", is_object_random=True, is_target_random=True)
+env = ToyPickPlaceFiveObject(render=VIEWER_ENABLE, map_name="maze_world", is_object_random=True, is_target_random=True)
+#env = ToyPickPlaceFiveObject(render=VIEWER_ENABLE, map_name="maze_world_with_obs", is_object_random=True, is_target_random=False)
+#workspace_objects = env.get_workspace_objects()
 # print("Robot dim" ,workspace_objects.robot.robot_dim)
 # print("Obs dim", workspace_objects.movable_obstacles["object_0"].dimension)
 
@@ -61,7 +63,7 @@ success_episode = 0
 for i in range(NUM_EPS):
     workspace_objects = env.get_workspace_objects()
     workspace = WorkspaceFromEnv(workspace_objects)
-    planner = MotionOptimizer(workspace, action_list, enable_viewer=VIEWER_ENABLE, flexible_traj_ratio=5)
+    planner = MotionOptimizer(workspace, action_list, enable_global_planner=False, enable_viewer=VIEWER_ENABLE, flexible_traj_ratio=4)
     planner.execute_plan()
     planner.visualize_final_trajectory()
     print("Total cost", planner.get_total_cost())
