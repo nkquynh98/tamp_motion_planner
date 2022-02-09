@@ -41,7 +41,7 @@ for i in range(5):
 #action_list = [MoveToPick(parameters=["object_0"],duration=50), MoveToPlace(parameters=["object_0", "target_0"], duration=20)]
 objective_TrajConstraint=TrajectoryConstraintObjective(T=TRAJ_LENGTH)
 #env = ToyPickPlaceFiveObject(render=VIEWER_ENABLE, map_name="maze_world_narrow", is_object_random=True, is_target_random=True)
-env = ToyPickPlaceFiveObject(render=VIEWER_ENABLE, map_name="maze_world", is_object_random=True, is_target_random=True)
+env = ToyPickPlaceFiveObject(render=VIEWER_ENABLE, map_name="maze_world", is_object_random=True, is_target_random=False)
 #env = ToyPickPlaceFiveObject(render=VIEWER_ENABLE, map_name="maze_world_with_obs", is_object_random=True, is_target_random=False)
 #workspace_objects = env.get_workspace_objects()
 # print("Robot dim" ,workspace_objects.robot.robot_dim)

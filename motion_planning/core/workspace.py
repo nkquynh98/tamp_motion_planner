@@ -5,7 +5,7 @@ from pybewego.workspace_viewer_server import WorkspaceViewerServer
 from toy_gym.envs.core.workspace_objects import Workspace_objects
 
 from pyrieef.geometry.workspace import *
-from pyrieef.rendering.workspace_planar import *
+#from pyrieef.rendering.workspace_planar import *
 
 class WorkspaceFromEnv(Workspace):
     def __init__(self, workspace_objects: Workspace_objects):
