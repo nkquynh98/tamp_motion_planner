@@ -27,6 +27,7 @@ from pyrieef.kinematics.robot import create_freeflyer_from_segments
 from pyrieef.geometry.rotations import rotation_matrix_2d_radian
 from pyrieef.motion.cost_terms import *
 from pyrieef.graph.shortest_path import *
+from pyrieef.utils.collision_checking import *
 
 #Ultis
 from multiprocessing.sharedctypes import Value, Array
@@ -36,9 +37,16 @@ from ctypes import c_bool, c_double
 import numpy as np
 from typing import List
 import os
+#Training object
+from policy_learning.core.data_object import Expert_motion_data, Expert_task_data
+# Working Environment
+from toy_gym.envs.toy_tasks.toy_pickplace_tamp import ToyPickPlaceTAMP
+from toy_gym.policy.TAMPActionExecutor import GILActionExecutor
 
 FREEFLYER_PATH = os.path.dirname(os.path.realpath(__file__))+"/../../configuration/Toy_freeflyer.json"
-
+CURRENT_FOLDER = os.path.dirname(os.path.realpath(__file__))
+DATA_FOLDER = CURRENT_FOLDER + "/../data/"
+FILE_NAME = "example_task_data.pickle"
 def calculate_distance(current_pos, target_pos):
     return np.linalg.norm(target_pos-current_pos)
 def calculate_angle(vector):
@@ -49,11 +57,13 @@ def get_grasp_pose(target, gripper_local_position, grasp_angle):
     position = target - rotation_matrix_2d_radian(grasp_angle)@gripper_local_position
     return np.concatenate([position, [grasp_angle]])
 
-class TAMPMotionOptimizerFreeFlyer:
-    def __init__(self, workspace: WorkspaceFromEnv, skeleton: List[Action], 
+class GIL_motion_planner:
+    def __init__(self, env: ToyPickPlaceTAMP, workspace: WorkspaceFromEnv, skeleton: List[Action], 
                 initial_traj_gen = linear_interpolation_trajectory, optimizer:MotionOptimization = FreeflyerOptimizationMultiprocessing, 
-                enable_viewer=False, flexible_traj_ratio=None, enable_global_planner=False):
-        self.workspace = workspace
+                enable_viewer=False, flexible_traj_ratio=None, enable_global_planner=False, max_steps = 200):
+        self.env = env
+        self.max_steps = max_steps
+        self.workspace = WorkspaceFromEnv(self.env.get_workspace_objects())
         self.skeleton = skeleton.copy()
         self.current_action = skeleton[0]
         self.initial_traj_gen = initial_traj_gen
@@ -71,6 +81,7 @@ class TAMPMotionOptimizerFreeFlyer:
         self.flexible_traj_ratio = flexible_traj_ratio 
         print("Init robot", self.current_robot_position)
         self.final_trajectory = Trajectory(q_init=self.current_robot_position, x=np.array([self.current_robot_position]))
+
         if self.enable_viewer:
             self.viewer = WorkspaceViewerServerFreeflyer(workspace, self.final_trajectory, scale = 50)
         
@@ -130,8 +141,11 @@ class TAMPMotionOptimizerFreeFlyer:
         self.final_trajectory = Trajectory(q_init = x[0:3], x=x[3:])
         #print("Final Traj", self.final_trajectory.x())
     def execute_plan(self):
+        # Storing the skelelon with refined trajectory
+        expert_task_data = Expert_task_data(self.env.env_name, self.env.domain, self.env.problem)
         for i in range(len(self.skeleton)):
             self.current_action = self.skeleton[i]
+            motion_data = Expert_motion_data(self.current_action)
             if self.current_action.name == "movetopick":
                 object_to_grasp = self.current_action.parameters[0]
                 q_init = self.current_robot_position
@@ -140,19 +154,27 @@ class TAMPMotionOptimizerFreeFlyer:
                 q_goal = get_grasp_pose(target_position, self.workspace.workspace_objects.robot._gripper_pose, calculate_angle(target_position-q_init[0:2]))
                 if self.flexible_traj_ratio is not None:
                     self.current_action.duration=int(np.max([int(calculate_distance(q_init[0:2], q_goal[0:2])*self.flexible_traj_ratio), 5]))
-
                     print("New traj length", self.current_action.duration)
                 #init_traj = self.initial_traj_gen(q_init=q_init,q_goal=q_goal, T=self.current_action.duration)
+                
+
+                #Find a path using the planner
                 result, found_traj = self.find_trajectory(self.workspace, q_init,q_goal, self.current_action.duration)
                 
-                if result:
+                #Checking the path collision and execute in the envivonment, get the observation on each step
+                is_collied = collision_check_trajectory_free_flyer(self.workspace, found_traj)
+
+                if result and not is_collied:
                     self.current_action.set_trajectoy(found_traj)
-                    self.current_robot_position = found_traj.final_configuration()
-                    print("Q_goal", q_goal)
-                    print("Q_real", self.current_robot_position)
-                    self.update_final_trajectory(found_traj)
-                else:
-                    print("solution not found", self.current_action.name, self.current_action.parameters)
+                    #Check if the current planning is accessable on the environment
+                    if self.execute_action_on_env(motion_data): 
+                       
+                        #self.current_robot_position = found_traj.final_configuration()
+                        # Fetching the environment with the workspace
+                        self.update_workspace_base_on_env()
+                        self.update_final_trajectory(found_traj)
+                    else:
+                        print("solution not found", self.current_action.name, self.current_action.parameters)
             elif self.current_action.name == "movetoplace":
                 holding_object = self.current_action.parameters[0]
                 target = self.current_action.parameters[1]
@@ -166,18 +188,56 @@ class TAMPMotionOptimizerFreeFlyer:
                 #init_traj = self.initial_traj_gen(q_init=q_init,q_goal=q_goal, T=self.current_action.duration)
                 result, found_traj = self.find_trajectory(self.workspace, q_init, q_goal, self.current_action.duration)
                 print("Final pose to target ", found_traj.final_configuration())
-                if result:
+                #Checking the path collision and execute in the envivonment, get the observation on each step
+                is_collied = collision_check_trajectory_free_flyer(self.workspace, found_traj)
+
+                if result and not is_collied:
                     #Update the position of the grasped objet and robot
                     self.current_action.set_trajectoy(found_traj)
-                    self.workspace.workspace_objects.movable_obstacles[holding_object].position = target_position
-                    self.current_robot_position = found_traj.final_configuration()
-                    print("Q_goal", q_goal)
-                    print("Q_real", self.current_robot_position)
-                    self.update_final_trajectory(found_traj)
-                else:
-                    print("solution not found", self.current_action.name, self.current_action.parameters)
-                pass
+                    if self.execute_action_on_env(motion_data):
+                        
+                        #self.workspace.workspace_objects.movable_obstacles[holding_object].position = target_position
+                        #self.current_robot_position = found_traj.final_configuration()
+                        self.update_workspace_base_on_env()
+                        self.update_final_trajectory(found_traj)
+                    else:
+                        print("solution not found", self.current_action.name, self.current_action.parameters)
+            #print("motion data len", len(motion_data.observation_list))
+            expert_task_data.add_motion_data(motion_data) 
+            #print("Motion data length", len(motion_data.observation_list))
+            #print("motion data", motion_data)
+        expert_task_data.is_task_fully_refined = True
+        print("len of obs" , len(expert_task_data.motion_data_list[0].observation_list))
+        return expert_task_data
+                
 
+    def update_workspace_base_on_env(self):
+        self.workspace = WorkspaceFromEnv(self.env.get_workspace_objects())
+        self.current_robot_position = np.concatenate([self.workspace.robot.position, [self.workspace.robot.yaw]])
+    def execute_action_on_env(self, expert_motion_data: Expert_motion_data):
+        # Execute the current action on the real environment to check the feasibility
+        # and return the set of observation and corresponding action for further training
+        policy = GILActionExecutor(self.env)
+        policy.set_action_list([self.current_action])
+        #expert_motion_data.observation_list = []
+        #expert_motion_data.command_list = []
+        for i in range(self.max_steps):
+            current_obs = self.env._get_obs()["observation"]
+            #print("Current observation", current_obs)
+            expert_motion_data.add_observation(current_obs)
+            action, is_target_reached = policy.get_action()
+            #action = np.array([0,0,0,1])
+            obs, reward, done, info = self.env.step(action)
+            expert_motion_data.add_command(action)
+            if self.enable_viewer:
+                time.sleep(0.01)
+            #print(i)
+            #print("motion data len", len(expert_motion_data.observation_list))
+            if is_target_reached:
+                return True
+        
+        return False
+        
     def visualize_final_trajectory(self):
         if self.enable_viewer:
             print("Final Trajectory", self.final_trajectory)
@@ -202,6 +262,9 @@ class TAMPMotionOptimizerFreeFlyer:
             self.viewer.initialize_viewer(problem, problem.trajectory)
         else:
             print("Viewer is not Enabled")
+    
+    
+    
     def find_trajectory(self, workspace, q_init, q_goal, traj_length):
         trajectory = None
         if self.enable_global_planner:
@@ -243,11 +306,11 @@ class TAMPMotionOptimizerFreeFlyer:
         else:
             result, trajectory = problem.optimize(self.optimizer_parameters, self.optimizer_options)
         cost = problem.objective.forward(trajectory.x())[0]
-        print("Cost", cost)    
-        print("status ",result)
-        print("trajectory ", trajectory)
+        #print("Cost", cost)    
+        #print("status ",result)
+        #print("trajectory ", trajectory)
         final_traj = trajectory.x().copy()
-        print("Diff traj", init_traj-final_traj)
+        #print("Diff traj", init_traj-final_traj)
         if result:
             self.total_cost+=cost
         return [result, trajectory]

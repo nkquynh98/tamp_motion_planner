@@ -1,4 +1,4 @@
-from motion_planning.core.motion_planning_node import MotionPlanningNode
+from motion_planning.core.motion_planning_node import MotionPlanningNode, GILMotionPlanningNode
 from motion_planning.core.TAMP_motion_planner_freeflyer import TAMPMotionOptimizerFreeFlyer
 from toy_gym.policy.TAMPActionExecutor import TAMPActionExecutorFreeFlyer
 import argparse
@@ -16,9 +16,10 @@ print(args)
 assert "MotionNode" in args.node_name
 print(args.node_name)
 while(1):
-    if args.disable_freeflyer:
-        motion_node = MotionPlanningNode(args.node_name, viewer_enable=args.enable_viewer)
-    else:
-        motion_node = MotionPlanningNode(args.node_name, viewer_enable=args.enable_viewer,planner_type=TAMPMotionOptimizerFreeFlyer,action_executor=TAMPActionExecutorFreeFlyer)
+    motion_node = GILMotionPlanningNode(args.node_name, viewer_enable=args.enable_viewer)
+    # if args.disable_freeflyer:
+    #     motion_node = MotionPlanningNode(args.node_name, viewer_enable=args.enable_viewer)
+    # else:
+    #     motion_node = MotionPlanningNode(args.node_name, max_steps=100, viewer_enable=args.enable_viewer,planner_type=TAMPMotionOptimizerFreeFlyer,action_executor=TAMPActionExecutorFreeFlyer)
     motion_node.get_motion_problem()
     motion_node.plan()

@@ -2,6 +2,7 @@ import socket
 import pickle
 from time import time, sleep
 from logic_planning.planner import LogicPlanner
+from policy_learning.core.data_process import process_task_data
 from queue_server.common_object.parser import PDDLParser
 from queue_server.common_object.message import Message
 from queue_server.core.queue_object import TaskQueueObject, MotionQueueObject
@@ -10,6 +11,7 @@ from queue_server.core.queue_object import TaskQueueObject, MotionQueueObject
 from motion_planning.core.workspace import WorkspaceFromEnv
 from motion_planning.core.action import *
 from motion_planning.core.TAMP_motion_planner import TAMPMotionOptimizer
+from motion_planning.core.GIL_motion_planner import GIL_motion_planner
 
 
 # Working Environment
@@ -40,7 +42,7 @@ class MotionPlanningNode:
                 send_value = pickle.dumps(self.message)
                 self.socket.connect((self.host,self.port))
                 self.socket.sendall(send_value)
-                received_data = self.socket.recv(10000)
+                received_data = self.socket.recv(100000)
                 self.socket.close()
                 message = pickle.loads(received_data)
                 if not isinstance(message, Message):
@@ -61,7 +63,7 @@ class MotionPlanningNode:
         init_config = self.motion_object.geometric_state
         goal = self.motion_object.problem.get_dict()["positive_goal"]
         skeleton = self.motion_object.skeleton
-        env = self.env_type(render=self.viewer_enable, json_data = init_config, goal=goal)
+        env = self.env_type(render=self.viewer_enable, json_data = init_config, goal=goal, enable_physic=False)
         workspace_objects = env.get_workspace_objects()
         workspace = WorkspaceFromEnv(workspace_objects)
         planner = self.planner_type(workspace, skeleton=skeleton, enable_global_planner=False, enable_viewer=self.viewer_enable, flexible_traj_ratio=4)
@@ -72,7 +74,7 @@ class MotionPlanningNode:
         for _ in range(self.max_steps):
             action = policy.get_action()
             obs, reward, done, info = env.step(action)
-            print("logic_state", env.get_logic_state())
+            #print("logic_state", env.get_logic_state())
             if done:
                 #dones.append(i)
                 #success_episode +=1
@@ -80,6 +82,29 @@ class MotionPlanningNode:
         env.reset()
         del planner
         del policy      
+        del env  
+        self.motion_object.is_refined = True
+        return True
+
+class GILMotionPlanningNode(MotionPlanningNode):
+    def __init__(self, node_name = "MotionNode_0", host = "127.0.0.1", port = 64563, viewer_enable = False, max_steps = 100):
+        super().__init__(node_name,host,port,viewer_enable,env_type = ToyPickPlaceTAMP, planner_type=GIL_motion_planner,max_steps=max_steps)
+    def plan(self):
+        time_start = time()
+        assert self.motion_object.is_refined == False
+        init_config = self.motion_object.geometric_state
+        skeleton = self.motion_object.skeleton
+        env = self.env_type(render=self.viewer_enable, json_data = init_config, problem=self.motion_object.problem, domain=self.motion_object.domain, enable_physic=False)
+        workspace_objects = env.get_workspace_objects()
+        workspace = WorkspaceFromEnv(workspace_objects)
+        planner = self.planner_type(env, workspace, skeleton=skeleton, enable_global_planner=False, enable_viewer=self.viewer_enable, flexible_traj_ratio=6)
+        task_data = planner.execute_plan()
+        process_task_data(task_data)
+        planner.visualize_final_trajectory()
+        print("Total cost", planner.get_total_cost())
+        print("planning time: {} s".format(time()-time_start))
+        env.reset()
+        del planner 
         del env  
         self.motion_object.is_refined = True
         return True
